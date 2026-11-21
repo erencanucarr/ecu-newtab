@@ -1,0 +1,10 @@
+{
+  "id": "ecu-newtab",
+  "name": "ecu-newtab",
+  "version": "1.0.0",
+  "minAppVersion": "1.7.2",
+  "description": "A useful new tab: search, recent notes, bookmarks and recent terminal commands.",
+  "author": "Eren Can Ucar",
+  "authorUrl": "https://github.com/erencanucarr",
+  "isDesktopOnly": false
+}

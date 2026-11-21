@@ -192,6 +192,9 @@
   font-size: var(--font-ui-small);
   color: var(--text-faint);
 }
+.ent-more {
+  font-size: var(--font-ui-smaller);
+}
 
 .ent-row {
   display: flex;
@@ -268,8 +271,14 @@
   opacity: 0;
   transition: opacity 100ms ease;
 }
-.ent-row:hover .ent-row-tools {
+.ent-row:hover .ent-row-tools,
+.ent-row:focus-within .ent-row-tools {
   opacity: 1;
+}
+@media (hover: none) {
+  .ent-row-tools {
+    opacity: 1;
+  }
 }
 .ent-row-tools .clickable-icon {
   padding: 3px;

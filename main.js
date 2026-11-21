@@ -1,4 +1,4 @@
-const { Plugin, PluginSettingTab, Setting, Notice, TFile, prepareFuzzySearch, prepareSimpleSearch, setIcon } = require("obsidian");
+const { Plugin, PluginSettingTab, Setting, Notice, TFile, Platform, debounce, moment, prepareFuzzySearch, prepareSimpleSearch, setIcon } = require("obsidian");
 
 const STRINGS = {
   en: {
@@ -8,25 +8,7 @@ const STRINGS = {
     "set.uiLangEn": "English",
     "set.uiLangTr": "Türkçe",
     "notice.langChanged": "Language changed. Reload Obsidian to apply it everywhere.",
-    "day.0": "Sunday",
-    "day.1": "Monday",
-    "day.2": "Tuesday",
-    "day.3": "Wednesday",
-    "day.4": "Thursday",
-    "day.5": "Friday",
-    "day.6": "Saturday",
-    "month.0": "January",
-    "month.1": "February",
-    "month.2": "March",
-    "month.3": "April",
-    "month.4": "May",
-    "month.5": "June",
-    "month.6": "July",
-    "month.7": "August",
-    "month.8": "September",
-    "month.9": "October",
-    "month.10": "November",
-    "month.11": "December",
+    "date.format": "dddd, MMMM D",
     "ago.now": "just now",
     "ago.min": "{n} min ago",
     "ago.hour": "{n} h ago",
@@ -37,7 +19,7 @@ const STRINGS = {
     "search.placeholder": "Search notes…",
     "action.newNote": "New note",
     "action.daily": "Today's note",
-    "action.terminal": "Terminal Panel",
+    "action.terminal": "Terminal panel",
     "action.random": "Random note",
     "card.recent": "Recently edited",
     "card.recentEmpty": "No notes yet.",
@@ -51,6 +33,8 @@ const STRINGS = {
     "cmdRow.typeInto": "Type into terminal (without Enter, for {host})",
     "cmdRow.run": "Run in terminal",
     "notice.copied": "Command copied",
+    "notice.copyFailed": "Couldn't copy to the clipboard.",
+    "card.more": "+{n} more in the Bookmarks panel",
     "notice.codekitOff": "ecu-codekit is off: command copied to clipboard.",
     "notice.createFailed": "Couldn't create note: {error}",
     "results.content": "Found in content",
@@ -59,7 +43,7 @@ const STRINGS = {
     "cmd.open": "Open new tab",
     "set.showClock": "Clock and date",
     "set.showActions": "Quick actions",
-    "set.showActionsDesc": "New note, today's note, Terminal Panel, random note.",
+    "set.showActionsDesc": "New note, today's note, Terminal panel, random note.",
     "set.showRecent": "Recently edited notes",
     "set.showBookmarks": "Bookmarks",
     "set.showCommands": "Recent commands",
@@ -74,25 +58,7 @@ const STRINGS = {
     "set.uiLangEn": "English",
     "set.uiLangTr": "Türkçe",
     "notice.langChanged": "Dil değişti. Her yerde uygulanması için Obsidian'ı yeniden yükle.",
-    "day.0": "Pazar",
-    "day.1": "Pazartesi",
-    "day.2": "Salı",
-    "day.3": "Çarşamba",
-    "day.4": "Perşembe",
-    "day.5": "Cuma",
-    "day.6": "Cumartesi",
-    "month.0": "Ocak",
-    "month.1": "Şubat",
-    "month.2": "Mart",
-    "month.3": "Nisan",
-    "month.4": "Mayıs",
-    "month.5": "Haziran",
-    "month.6": "Temmuz",
-    "month.7": "Ağustos",
-    "month.8": "Eylül",
-    "month.9": "Ekim",
-    "month.10": "Kasım",
-    "month.11": "Aralık",
+    "date.format": "D MMMM dddd",
     "ago.now": "az önce",
     "ago.min": "{n} dk önce",
     "ago.hour": "{n} saat önce",
@@ -103,7 +69,7 @@ const STRINGS = {
     "search.placeholder": "Not ara…",
     "action.newNote": "Yeni not",
     "action.daily": "Bugünün notu",
-    "action.terminal": "Terminal Paneli",
+    "action.terminal": "Terminal paneli",
     "action.random": "Rastgele not",
     "card.recent": "Son düzenlenen",
     "card.recentEmpty": "Henüz not yok.",
@@ -117,6 +83,8 @@ const STRINGS = {
     "cmdRow.typeInto": "Terminale yaz (Enter'sız, {host} için)",
     "cmdRow.run": "Terminalde çalıştır",
     "notice.copied": "Komut kopyalandı",
+    "notice.copyFailed": "Panoya kopyalanamadı.",
+    "card.more": "Yer imleri panelinde {n} tane daha",
     "notice.codekitOff": "ecu-codekit kapalı: komut panoya kopyalandı.",
     "notice.createFailed": "Not oluşturulamadı: {error}",
     "results.content": "İçerikte geçenler",
@@ -125,7 +93,7 @@ const STRINGS = {
     "cmd.open": "Yeni sekme aç",
     "set.showClock": "Saat ve tarih",
     "set.showActions": "Hızlı işlemler",
-    "set.showActionsDesc": "Yeni not, bugünün notu, Terminal Paneli, rastgele not.",
+    "set.showActionsDesc": "Yeni not, bugünün notu, Terminal paneli, rastgele not.",
     "set.showRecent": "Son düzenlenen notlar",
     "set.showBookmarks": "Yer imleri",
     "set.showCommands": "Son komutlar",
@@ -169,6 +137,10 @@ const DEFAULTS = {
   commandCount: 8,
 };
 
+const BOOKMARK_LIMIT = 12;
+const BIG_VAULT = 5000;
+const SCAN = Platform.isMobile ? { files: 800, chunk: 16, budget: 1500 } : { files: 3000, chunk: 48, budget: 2500 };
+
 function ago(ts) {
   const s = Math.max(0, (Date.now() - ts) / 1000);
   const m = s / 60;
@@ -185,10 +157,75 @@ function ago(ts) {
 
 const JUNK_RE = /data:[\w/+.-]+;base64|[A-Za-z0-9+/=]{80,}/;
 
+const SAFE_CMD_RE = /\b(?:(?:kubectl|oc)\s+(?:get|describe|delete)\s+secrets?\b|(?:gh|docker)\s+secret\s+(?:list|ls)\b)/gi;
+const SECRET_RES = [
+  /passw(?:or)?d|passwd|passphrase|secret|token|api[-_]?key|bearer|credential|private[-_]?key|access[-_]?key|authorization\s*:/i,
+  /(?:^|[\s_-])pass(?:wd|in|out)?(?=$|[^\w])/i,
+  /\w+_(?:pass|pwd|key|pat)\w*\s*=/i,
+  /\bBasic\s+[A-Za-z0-9+/]{8,}={0,2}/,
+  /\b(?:mysql\w*|mariadb\w*)\b[^|;&]*\s(?:-p\S|--password)/i,
+  /\b(?:mongo\w*)\b[^|;&]*\s-p\s*\S/i,
+  /\bsshpass\b[^|;&]*\s-p\s*\S/i,
+  /\bdocker\s+login\b[^|;&]*\s-p\s*\S/i,
+  /\bredis-cli\b[^|;&]*\s-a\s*\S/i,
+  /\becho\b[^|]*\|\s*sudo\b[^|;&]*\s-\w*S/,
+  /\s(?:-u|--user)[\s=]+[^\s:]+:(?!\d+(?:\s|$))\S/,
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/i,
+  /\bgh[pousr]_[A-Za-z0-9]|github_pat_|\bsk-[A-Za-z0-9]|\bxox[abprs]-|\bAKIA[0-9A-Z]{16}\b|\bglpat-|\bnpm_[A-Za-z0-9]{16,}/,
+  /\bvault\s+login\b/i,
+];
+
+function looksSecret(cmd) {
+  const s = String(cmd || "").replace(SAFE_CMD_RE, " ");
+  return SECRET_RES.some((re) => re.test(s));
+}
+
+function topK(items, k, cmp) {
+  const out = [];
+  if (k <= 0) return out;
+  for (const it of items) {
+    if (out.length >= k && cmp(it, out[out.length - 1]) >= 0) continue;
+    let lo = 0;
+    let hi = out.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (cmp(it, out[mid]) < 0) hi = mid;
+      else lo = mid + 1;
+    }
+    out.splice(lo, 0, it);
+    if (out.length > k) out.pop();
+  }
+  return out;
+}
+
+const byMtime = (a, b) => b.stat.mtime - a.stat.mtime;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function snippet(text, m) {
+  for (const [from] of m.matches) {
+    const start = Math.max(0, text.lastIndexOf("\n", from) + 1);
+    let end = text.indexOf("\n", from);
+    if (end < 0) end = text.length;
+    let line = text.slice(start, end).trim();
+    if (JUNK_RE.test(line)) continue;
+    if (line.length > 140) {
+      const at = Math.max(0, from - start - 50);
+      line = (at ? "…" : "") + line.slice(at, at + 130) + "…";
+    }
+    return line;
+  }
+  return null;
+}
+
 function icon(parent, name, cls) {
   const el = parent.createSpan({ cls: "ent-icon" + (cls ? " " + cls : "") });
   setIcon(el, name);
   return el;
+}
+
+function bookmarksPlugin(app) {
+  const ip = app.internalPlugins;
+  return (ip && ip.getEnabledPluginById && ip.getEnabledPluginById("bookmarks")) || null;
 }
 
 class NewTab {
@@ -202,6 +239,8 @@ class NewTab {
     this.sel = 0;
     this.results = [];
     this.searchToken = 0;
+    this.queryTimer = null;
+    this.dirty = new Set();
     this.build();
   }
 
@@ -213,7 +252,15 @@ class NewTab {
     return this.root.isConnected && this.leaf.view && this.leaf.view.getViewType() === "empty";
   }
 
+  visible() {
+    const doc = this.root.ownerDocument;
+    if (doc && doc.hidden) return false;
+    return typeof this.root.isShown === "function" ? this.root.isShown() : true;
+  }
+
   destroy() {
+    this.searchToken++;
+    clearTimeout(this.queryTimer);
     this.root.remove();
     this.host.removeClass(HOST);
   }
@@ -221,6 +268,11 @@ class NewTab {
   build() {
     const r = this.root;
     r.empty();
+    this.dirty.clear();
+    this.clockEl = null;
+    this.recentEl = null;
+    this.bookmarksEl = null;
+    this.commandsEl = null;
     if (this.settings.showClock) {
       const head = r.createDiv({ cls: "ent-head" });
       this.clockEl = head.createDiv({ cls: "ent-clock" });
@@ -234,7 +286,7 @@ class NewTab {
       type: "text",
       attr: { placeholder: t("search.placeholder"), spellcheck: "false" },
     });
-    this.input.addEventListener("input", () => this.onQuery());
+    this.input.addEventListener("input", () => this.onInput());
     this.input.addEventListener("keydown", (e) => this.onKey(e));
     this.resultsEl = r.createDiv({ cls: "ent-results" });
 
@@ -253,15 +305,30 @@ class NewTab {
     if (!part || part === "commands") this.renderCommands();
   }
 
+  request(part) {
+    if (this.visible()) this.refresh(part);
+    else this.dirty.add(part || "all");
+  }
+
+  flush() {
+    if (!this.dirty.size) return;
+    const parts = [...this.dirty];
+    this.dirty.clear();
+    if (parts.includes("all")) this.refresh();
+    else for (const p of parts) this.refresh(p);
+  }
+
   tick() {
     if (!this.clockEl) return;
-    const now = new Date();
-    this.clockEl.setText(String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0"));
-    this.dateEl.setText(`${t("day." + now.getDay())}, ${now.getDate()} ${t("month." + now.getMonth())}`);
+    const now = moment().locale(uiLang);
+    this.clockEl.setText(now.format("LT"));
+    this.dateEl.setText(now.format(t("date.format")));
   }
 
   focus() {
-    if (this.input && document.activeElement !== this.input) this.input.focus();
+    if (Platform.isMobile || !this.input) return;
+    const doc = this.input.ownerDocument;
+    if (!doc || doc.activeElement !== this.input) this.input.focus();
   }
 
   terminal() {
@@ -284,7 +351,7 @@ class NewTab {
       b.addEventListener("click", fn);
     };
     add("file-plus", t("action.newNote"), () => this.newNote());
-    if (this.app.internalPlugins.getEnabledPluginById && this.app.internalPlugins.getEnabledPluginById("daily-notes")) {
+    if (this.app.internalPlugins?.getEnabledPluginById?.("daily-notes")) {
       add("calendar", t("action.daily"), () => this.runHere("daily-notes"));
     }
     if (this.terminal()) add("square-terminal", t("action.terminal"), () => this.openTerminalPanel());
@@ -300,39 +367,39 @@ class NewTab {
     return el.createDiv({ cls: "ent-list" });
   }
 
-  fileRow(list, file, right) {
+  fileRow(list, file, right, subpath) {
     const row = list.createDiv({ cls: "ent-row" });
     const main = row.createDiv({ cls: "ent-row-main" });
     main.createSpan({ cls: "ent-row-title", text: file.basename });
     const dir = file.parent && file.parent.path !== "/" ? file.parent.path : "";
     if (dir) main.createSpan({ cls: "ent-row-sub", text: dir });
     if (right) row.createSpan({ cls: "ent-row-right", text: right });
-    row.addEventListener("click", (e) => this.openFile(file, e.metaKey || e.ctrlKey || e.button === 1));
-    row.addEventListener("auxclick", (e) => e.button === 1 && this.openFile(file, true));
+    row.addEventListener("click", (e) => this.openFile(file, e.metaKey || e.ctrlKey || e.button === 1, subpath));
+    row.addEventListener("auxclick", (e) => e.button === 1 && this.openFile(file, true, subpath));
     return row;
   }
 
   renderRecent() {
     if (!this.recentEl) return;
     const list = this.card(this.recentEl, "clock", t("card.recent"));
-    const files = this.app.vault
-      .getMarkdownFiles()
-      .sort((a, b) => b.stat.mtime - a.stat.mtime)
-      .slice(0, this.settings.recentCount);
+    const files = topK(this.app.vault.getMarkdownFiles(), this.settings.recentCount, byMtime);
     if (!files.length) list.createDiv({ cls: "ent-empty", text: t("card.recentEmpty") });
     for (const f of files) this.fileRow(list, f, ago(f.stat.mtime));
   }
 
   bookmarkFiles() {
-    const bp = this.app.internalPlugins.getEnabledPluginById && this.app.internalPlugins.getEnabledPluginById("bookmarks");
+    const bp = bookmarksPlugin(this.app);
     const out = [];
     const walk = (items) => {
       for (const it of items || []) {
-        if (it.type === "group") walk(it.items);
-        else if (it.type === "file") {
-          const f = this.app.vault.getAbstractFileByPath(it.path);
-          if (f instanceof TFile) out.push({ file: f, title: it.title });
+        if (!it) continue;
+        if (it.type === "group") {
+          walk(it.items);
+          continue;
         }
+        if (it.type !== "file") continue;
+        const f = this.app.vault.getAbstractFileByPath(it.path);
+        if (f instanceof TFile) out.push({ file: f, title: it.title, subpath: it.subpath || "" });
       }
     };
     if (bp) walk(bp.items);
@@ -350,18 +417,21 @@ class NewTab {
       });
       return;
     }
-    for (const m of marks.slice(0, 12)) {
-      const row = this.fileRow(list, m.file);
-      if (m.title) row.querySelector(".ent-row-title").setText(m.title);
+    for (const m of marks.slice(0, BOOKMARK_LIMIT)) {
+      const row = this.fileRow(list, m.file, "", m.subpath);
+      const title = m.title || (m.subpath ? m.file.basename + m.subpath : "");
+      if (title) row.querySelector(".ent-row-title").setText(title);
     }
+    if (marks.length > BOOKMARK_LIMIT) list.createDiv({ cls: "ent-empty ent-more", text: t("card.more", { n: marks.length - BOOKMARK_LIMIT }) });
   }
 
   renderCommands() {
     if (!this.commandsEl) return;
     const term = this.terminal();
-    const cmds = term && term.recentCommands ? term.recentCommands().slice(0, this.settings.commandCount) : [];
+    const all = term && term.recentCommands ? term.recentCommands() : [];
+    const cmds = all.filter((c) => c && typeof c.cmd === "string" && !looksSecret(c.cmd)).slice(0, this.settings.commandCount);
     const list = this.card(this.commandsEl, "terminal", t("card.commands"), (head) => {
-      if (!cmds.length) return;
+      if (!all.length) return;
       const clear = head.createEl("button", { cls: "ent-link", text: t("card.clear") });
       clear.addEventListener("click", async () => {
         await term.clearHistory();
@@ -386,32 +456,59 @@ class NewTab {
       setIcon(copy, "copy");
       copy.addEventListener("click", (e) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(c.cmd);
-        new Notice(t("notice.copied"));
+        this.copy(c.cmd, t("notice.copied"));
       });
       const run = tools.createEl("button", {
         cls: "clickable-icon ent-run",
         attr: { "aria-label": c.host ? t("cmdRow.typeInto", { host: c.host }) : t("cmdRow.run") },
       });
       setIcon(run, c.host ? "corner-down-left" : "play");
-      const go = (e) => {
+      run.addEventListener("click", (e) => {
         e.stopPropagation();
         this.runCommand(c);
-      };
-      run.addEventListener("click", go);
-      row.addEventListener("click", go);
+      });
+      row.addEventListener("click", () => this.typeCommand(c));
     }
+  }
+
+  async copy(text, message) {
+    try {
+      await navigator.clipboard.writeText(text);
+      new Notice(message);
+      return true;
+    } catch (e) {
+      new Notice(t("notice.copyFailed"));
+      return false;
+    }
+  }
+
+  async typeCommand(c) {
+    const cl = this.codekit();
+    if (cl && cl.sendToTerminal) return cl.sendToTerminal(c.cmd, false);
+    return this.copy(c.cmd, t("notice.codekitOff"));
   }
 
   async runCommand(c) {
     const cl = this.codekit();
     if (!c.host && cl && cl.runInTerminal) return cl.runInTerminal(c.cmd);
     if (cl && cl.sendToTerminal) return cl.sendToTerminal(c.cmd, !c.host);
-    navigator.clipboard.writeText(c.cmd);
-    new Notice(t("notice.codekitOff"));
+    return this.copy(c.cmd, t("notice.codekitOff"));
+  }
+
+  onInput() {
+    clearTimeout(this.queryTimer);
+    this.queryTimer = null;
+    this.searchToken++;
+    if (this.input.value.trim() && this.app.vault.getFiles().length > BIG_VAULT) {
+      this.queryTimer = setTimeout(() => {
+        this.queryTimer = null;
+        this.onQuery();
+      }, 50);
+    } else this.onQuery();
   }
 
   onQuery() {
+    this.searchToken++;
     const q = this.input.value.trim();
     this.sel = 0;
     if (!q) {
@@ -429,52 +526,42 @@ class NewTab {
       const score = m ? m.score + 1 : p ? p.score : null;
       if (score != null) byName.push({ file: f, score });
     }
-    byName.sort((a, b) => b.score - a.score || b.file.stat.mtime - a.file.stat.mtime);
-    this.results = byName.slice(0, 8).map((r) => ({ kind: "file", file: r.file }));
+    const best = topK(byName, 8, (a, b) => b.score - a.score || b.file.stat.mtime - a.file.stat.mtime);
+    this.results = best.map((r) => ({ kind: "file", file: r.file }));
     this.results.push({ kind: "create", name: q });
     this.renderResults();
     if (q.length >= 3) this.searchContent(q);
   }
 
+  current(token, q) {
+    return token === this.searchToken && this.alive() && this.input.value.trim() === q;
+  }
+
   async searchContent(q) {
-    const token = ++this.searchToken;
-    await new Promise((r) => setTimeout(r, 180));
-    if (token !== this.searchToken) return;
+    const token = this.searchToken;
+    await sleep(180);
+    if (!this.current(token, q)) return;
     const simple = prepareSimpleSearch(q);
     const seen = new Set(this.results.filter((r) => r.kind === "file").map((r) => r.file.path));
+    const files = topK(this.app.vault.getMarkdownFiles(), SCAN.files, byMtime).filter((f) => !seen.has(f.path));
+    const deadline = Date.now() + SCAN.budget;
     const hits = [];
-    const files = this.app.vault.getMarkdownFiles().sort((a, b) => b.stat.mtime - a.stat.mtime);
-    for (const f of files) {
-      if (hits.length >= 8 || token !== this.searchToken) break;
-      if (seen.has(f.path)) continue;
-      const text = await this.app.vault.cachedRead(f);
-      const m = simple(text);
-      if (!m) continue;
-      let at = -1;
-      let start = 0;
-      let line = "";
-      for (const [from] of m.matches) {
-        start = Math.max(0, text.lastIndexOf("\n", from) + 1);
-        let end = text.indexOf("\n", from);
-        if (end < 0) end = text.length;
-        const l = text.slice(start, end).trim();
-        if (!JUNK_RE.test(l)) {
-          at = from;
-          line = l;
-          break;
-        }
+    for (let i = 0; i < files.length && hits.length < 8 && Date.now() < deadline; i += SCAN.chunk) {
+      if (i) await sleep(0);
+      if (!this.current(token, q)) return;
+      const part = files.slice(i, i + SCAN.chunk);
+      const texts = await Promise.all(part.map((f) => this.app.vault.cachedRead(f).catch(() => "")));
+      if (!this.current(token, q)) return;
+      for (let k = 0; k < part.length && hits.length < 8; k++) {
+        const text = texts[k];
+        const m = text ? simple(text) : null;
+        const line = m ? snippet(text, m) : null;
+        if (line != null) hits.push({ kind: "content", file: part[k], snippet: line });
       }
-      if (at < 0) continue;
-      if (line.length > 140) {
-        const from = Math.max(0, at - start - 50);
-        line = (from ? "…" : "") + line.slice(from, from + 130) + "…";
-      }
-      hits.push({ kind: "content", file: f, snippet: line });
     }
-    if (token !== this.searchToken || !this.alive()) return;
-    const create = this.results.pop();
-    this.results = this.results.concat(hits);
-    this.results.push(create);
+    if (!this.current(token, q) || !hits.length) return;
+    const create = this.results.filter((r) => r && r.kind === "create");
+    this.results = this.results.filter((r) => r && r.kind === "file").concat(hits, create);
     this.renderResults();
   }
 
@@ -508,7 +595,13 @@ class NewTab {
   }
 
   onKey(e) {
-    const n = this.results.length;
+    if (e.isComposing || e.keyCode === 229) return;
+    if (this.queryTimer && (e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      clearTimeout(this.queryTimer);
+      this.queryTimer = null;
+      this.onQuery();
+    }
+    const n = this.input.value.trim() ? this.results.length : 0;
     if (e.key === "ArrowDown" && n) {
       e.preventDefault();
       this.select((this.sel + 1) % n);
@@ -524,7 +617,7 @@ class NewTab {
       e.preventDefault();
       e.stopPropagation();
       this.input.value = "";
-      this.onQuery();
+      this.onInput();
     }
   }
 
@@ -534,13 +627,15 @@ class NewTab {
   }
 
   pick(i, newTab) {
+    if (!this.input.value.trim()) return;
     const r = this.results[i];
     if (!r) return;
     if (r.kind === "create") return this.newNote(r.name);
     this.openFile(r.file, newTab);
   }
 
-  openFile(file, newTab) {
+  openFile(file, newTab, subpath) {
+    if (subpath) return this.app.workspace.openLinkText(file.path + subpath, "", newTab ? "tab" : false);
     const leaf = newTab ? this.app.workspace.getLeaf("tab") : this.leaf;
     leaf.openFile(file);
   }
@@ -548,7 +643,12 @@ class NewTab {
   async newNote(name) {
     try {
       const parent = this.app.fileManager.getNewFileParent("");
-      const clean = (name || "").replace(/[\\/:*?"<>|#^[\]]/g, " ").trim() || t("newNote.untitled");
+      const clean =
+        (name || "")
+          .replace(/[\\/:*?"<>|#^[\]]/g, " ")
+          .replace(/^[\s.]+/, "")
+          .slice(0, 120)
+          .replace(/[\s.]+$/, "") || t("newNote.untitled");
       const base = parent.path === "/" ? "" : parent.path + "/";
       let p = `${base}${clean}.md`;
       for (let k = 1; this.app.vault.getAbstractFileByPath(p); k++) p = `${base}${clean} ${k}.md`;
@@ -587,27 +687,47 @@ module.exports = class EcuNewTab extends Plugin {
 
     const scan = () => this.scan();
     this.app.workspace.onLayoutReady(scan);
-    this.registerEvent(this.app.workspace.on("layout-change", scan));
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => {
+        this.scan();
+        this.flushShown();
+      })
+    );
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
         this.scan();
+        this.each((t) => t.tick());
+        this.flushShown();
         const t = this.tabFor(leaf);
         if (t) {
-          t.refresh();
+          t.flush();
+          t.refresh("bookmarks");
           setTimeout(() => t.focus(), 30);
         }
       })
     );
-    this.registerEvent(this.app.workspace.on("ecu-terminal:history", () => this.each((t) => t.refresh("commands"))));
+    this.registerEvent(this.app.workspace.on("ecu-terminal:history", () => this.each((t) => t.request("commands"))));
+    this.registerDomEvent(document, "visibilitychange", () => {
+      if (document.hidden) return;
+      this.each((t) => t.tick());
+      this.flushShown();
+    });
 
-    let timer = null;
-    const recent = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => this.each((t) => t.refresh("recent")), 600);
+    this.pending = new Set();
+    this.vaultTimer = null;
+    const queue = (...parts) => {
+      for (const p of parts) this.pending.add(p);
+      clearTimeout(this.vaultTimer);
+      this.vaultTimer = setTimeout(() => {
+        const ps = [...this.pending];
+        this.pending.clear();
+        this.each((t) => ps.forEach((p) => t.request(p)));
+      }, 600);
     };
-    for (const ev of ["modify", "create", "delete", "rename"]) this.registerEvent(this.app.vault.on(ev, recent));
-    this.registerInterval(window.setInterval(() => this.each((t) => t.tick()), 15000));
-    this.registerInterval(window.setInterval(() => this.each((t) => t.refresh()), 60000));
+    for (const ev of ["modify", "create"]) this.registerEvent(this.app.vault.on(ev, () => queue("recent")));
+    for (const ev of ["delete", "rename"]) this.registerEvent(this.app.vault.on(ev, () => queue("recent", "bookmarks")));
+    this.scheduleTick();
+    this.registerInterval(window.setInterval(() => this.each((t) => t.request()), 60000));
 
     this.addCommand({
       id: "open",
@@ -619,11 +739,26 @@ module.exports = class EcuNewTab extends Plugin {
     });
   }
 
+  scheduleTick() {
+    clearTimeout(this.tickTimer);
+    this.tickTimer = setTimeout(() => {
+      this.each((t) => t.tick());
+      this.scheduleTick();
+    }, 60000 - (Date.now() % 60000) + 50);
+  }
+
   each(fn) {
     for (const t of [...this.tabs]) {
       if (t.alive()) fn(t);
-      else this.tabs.delete(t);
+      else {
+        t.searchToken++;
+        this.tabs.delete(t);
+      }
     }
+  }
+
+  flushShown() {
+    this.each((t) => t.visible() && t.flush());
   }
 
   tabFor(leaf) {
@@ -647,10 +782,16 @@ module.exports = class EcuNewTab extends Plugin {
   }
 
   onunload() {
+    clearTimeout(this.tickTimer);
+    clearTimeout(this.vaultTimer);
     for (const t of this.tabs) t.destroy();
     this.tabs.clear();
-    document.querySelectorAll("." + ROOT).forEach((el) => el.remove());
-    document.querySelectorAll("." + HOST).forEach((el) => el.classList.remove(HOST));
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const el = leaf.view && leaf.view.contentEl;
+      if (!el) return;
+      el.querySelectorAll(":scope > ." + ROOT).forEach((c) => c.remove());
+      el.removeClass(HOST);
+    });
   }
 };
 
@@ -668,6 +809,7 @@ class EcuNewTabSettings extends PluginSettingTab {
       await p.saveData(p.settings);
       p.rebuild();
     };
+    const saveLater = debounce(save, 400, true);
 
     new Setting(containerEl)
       .setName(t("common.language"))
@@ -703,7 +845,10 @@ class EcuNewTabSettings extends PluginSettingTab {
           .setLimits(3, 20, 1)
           .setValue(p.settings[key])
           .setDynamicTooltip()
-          .onChange(async (v) => ((p.settings[key] = v), await save()))
+          .onChange((v) => {
+            p.settings[key] = v;
+            saveLater();
+          })
       );
     num("recentCount", t("set.recentCount"));
     num("commandCount", t("set.commandCount"));
